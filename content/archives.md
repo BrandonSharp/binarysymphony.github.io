@@ -1,6 +1,6 @@
 ---
 type: section
-layout: "archives"
+layout: 'archives'
 ---
 
 {{% archive %}}
