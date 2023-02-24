@@ -5,6 +5,7 @@
     xhtml = false
   [goldmark.extensions]
     typographer = false
+    footnote = true
   [highlight]
     codeFences = true
     guessSyntax = true
